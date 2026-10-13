@@ -27,7 +27,10 @@ import world.gregs.voidps.engine.entity.character.player.skill.level.Level.hasRe
 import world.gregs.voidps.engine.entity.character.player.skill.level.Level.hasRequirementsToUse
 import world.gregs.voidps.engine.entity.item.Item
 import world.gregs.voidps.engine.entity.item.slot
+import world.gregs.voidps.engine.inv.Inventory
+import world.gregs.voidps.engine.inv.add
 import world.gregs.voidps.engine.inv.inventory
+import world.gregs.voidps.engine.inv.stack.ItemDependentStack
 import world.gregs.voidps.network.login.protocol.visual.update.player.EquipSlot
 
 object DynamicResolvers {
@@ -162,26 +165,64 @@ object DynamicResolvers {
     }
 
     private fun withdraw(player: Player, items: List<BotItem>): Resolver? {
-        val actions = mutableListOf<BotAction>()
-        actions.add(BotGoToNearest("bank"))
-        actions.add(BotInteractObject("Use-quickly", "bank_booth*", success = BotInterfaceOpen("bank")))
-        actions.add(BotInterfaceOption("Deposit carried items", "bank:carried", success = BotInventorySetup(listOf(BotItem(setOf("empty"), min = 28)))))
-        var found = false
-        for (entry in items) {
-            val item = player.bank.items.firstOrNull { item -> valid(player, item, entry) || item.noted?.let { valid(player, it, entry) } == true }
-            if (item == null) {
+        // Deposit-all replaces the whole inventory. Plan that replacement before moving
+        // anything, so an available subset cannot starve acquisition of missing items.
+        val available = mutableMapOf<String, Long>()
+        for (item in player.bank.items.asSequence() + player.inventory.items.asSequence()) {
+            if (item.isEmpty() || item.def.getOrNull<Int>("unbankable")?.let { it != 0 } == true) {
                 continue
             }
-            val output = if (valid(player, item, entry)) item else item.noted!!
+            val bankItem = if (item.isNote) item.noted ?: continue else item
+            available[bankItem.id] = (available[bankItem.id] ?: 0L) + bankItem.amount
+        }
+        val planned = Inventory(Array(player.inventory.size) { Item.EMPTY }, stackRule = ItemDependentStack)
+        val withdrawals = mutableListOf<Triple<BotItem, Item, Item>>()
+        val requirements = items.map { entry ->
+            if (entry.min == null && entry.max == null) entry.copy(min = 1) else entry
+        }
+        for (entry in requirements) {
+            if (entry.ids.contains("empty") || Condition.contains(player, planned, listOf(entry))) {
+                continue
+            }
+            val amount = entry.min ?: 0
+            if (amount <= 0) {
+                continue
+            }
+            var selected = false
+            for ((id, count) in available) {
+                val bankItem = Item(id)
+                val output = when {
+                    valid(player, bankItem, entry) -> bankItem
+                    bankItem.noted?.let { valid(player, it, entry) } == true -> bankItem.noted!!
+                    else -> continue
+                }
+                val needed = amount - planned.count(output.id)
+                if (count < needed || !planned.add(output.id, needed)) {
+                    continue
+                }
+                available[id] = count - needed
+                withdrawals.add(Triple(entry.copy(min = needed), bankItem, output))
+                selected = true
+                break
+            }
+            if (!selected) {
+                return null
+            }
+        }
+        if (withdrawals.isEmpty() || !Condition.contains(player, planned, requirements)) {
+            return null
+        }
+        val actions = mutableListOf<BotAction>(
+            BotGoToNearest("bank"),
+            BotInteractObject("Use-quickly", "bank_booth*", success = BotInterfaceOpen("bank")),
+            BotInterfaceOption("Deposit carried items", "bank:carried", success = BotInventorySetup(listOf(BotItem(setOf("empty"), min = player.inventory.size)))),
+        )
+        for ((entry, item, output) in withdrawals) {
             actions.add(BotInterfaceOption("Toggle item/note withdrawl", "bank:note_mode", success = BotVariable("bank_notes", output.isNote, false)))
             withdraw(actions, entry, item)
-            found = true
         }
-        if (found) {
-            actions.add(BotCloseInterface)
-            return Resolver("withdraw_from_bank", weight = 20, actions = actions)
-        }
-        return null
+        actions.add(BotCloseInterface)
+        return Resolver("withdraw_from_bank", weight = 20, actions = actions)
     }
 
     private fun depositItems(player: Player, items: List<BotItem>): Resolver? {

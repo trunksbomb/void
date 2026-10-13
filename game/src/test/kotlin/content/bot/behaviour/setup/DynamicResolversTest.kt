@@ -47,11 +47,77 @@ class DynamicResolversTest {
         player.inventories.player = player
         player.inventories.normalStack = ItemDependentStack
         player.inventories.inventory(InventoryDefinition(stringId = "inventory", length = 10))
-        player.inventories.inventory(InventoryDefinition(stringId = "bank", length = 10))
+        player.inventories.inventory(InventoryDefinition(stringId = "bank", length = 100))
         player.inventories.inventory(InventoryDefinition(stringId = "worn_equipment", length = 10))
         ItemDefinitions.clear()
         NPCs.clear()
         GameObjects.reset()
+    }
+
+    @Test
+    fun `Available bank materials do not starve paid shop acquisition`() {
+        ItemDefinitions.set(arrayOf(ItemDefinition(stringId = "tool", cost = 15), ItemDefinition(stringId = "material"), ItemDefinition(stringId = "coins", stackable = 1)), mapOf("tool" to 0, "material" to 1, "coins" to 2))
+        player.bank.add("material", 8)
+        player.bank.add("coins", 1000)
+        DynamicResolvers.shopItems["tool"] = mutableListOf("market" to "trader")
+        val resolver = DynamicResolvers.resolver(player, BotInventorySetup(listOf(BotItem(setOf("material"), min = 8), BotItem(setOf("tool"), min = 1))))!!
+        assertEquals("buy_from_shop", resolver.id)
+        // Funding the purchase remains independently resolvable from the bank.
+        assertEquals("withdraw_from_bank", DynamicResolvers.resolver(player, resolver.setup.single())!!.id)
+    }
+
+    @Test
+    fun `Missing shop supply is acquired instead of repeatedly withdrawing available materials`() {
+        ItemDefinitions.set(arrayOf(ItemDefinition(stringId = "tool"), ItemDefinition(stringId = "material")), mapOf("tool" to 0, "material" to 1))
+        player.bank.add("material", 8)
+        DynamicResolvers.sampleItems["tool"] = mutableListOf("market" to "trader")
+        val setup = BotInventorySetup(listOf(BotItem(setOf("tool"), min = 1), BotItem(setOf("material"), min = 8)))
+        assertEquals("take_from_shop", DynamicResolvers.resolver(player, setup)!!.id)
+        // After partial progress, bank planning must include the carried supply it deposits.
+        player.inventory.add("tool")
+        val resolver = DynamicResolvers.resolver(player, setup)!!
+        assertEquals("withdraw_from_bank", resolver.id)
+        assertTrue(resolver.actions.filterIsInstance<BotInterfaceOption>().any { it.id == "bank:inventory:tool" })
+        assertTrue(resolver.actions.filterIsInstance<BotInterfaceOption>().any { it.id == "bank:inventory:material" })
+        assertEquals(1, player.inventory.count("tool"))
+        assertEquals(8, player.bank.count("material"))
+    }
+
+    @Test
+    fun `Unobtainable supply does not create a partial bank refill loop`() {
+        ItemDefinitions.set(arrayOf(ItemDefinition(stringId = "material")), mapOf("material" to 0))
+        player.bank.add("material", 8)
+        val setup = BotInventorySetup(listOf(BotItem(setOf("missing"), min = 1), BotItem(setOf("material"), min = 8)))
+        assertNull(DynamicResolvers.resolver(player, setup))
+    }
+
+    @Test
+    fun `Insufficient bank quantity is not a successful inventory plan`() {
+        ItemDefinitions.set(arrayOf(ItemDefinition(stringId = "material")), mapOf("material" to 0))
+        player.bank.add("material", 3)
+        assertNull(DynamicResolvers.resolver(player, BotInventorySetup(listOf(BotItem(setOf("material"), min = 8)))))
+        player.inventory.add("material", 5)
+        assertEquals("withdraw_from_bank", DynamicResolvers.resolver(player, BotInventorySetup(listOf(BotItem(setOf("material"), min = 8))))!!.id)
+    }
+
+    @Test
+    fun `Plan considers alternatives and actual inventory space`() {
+        ItemDefinitions.set(arrayOf(ItemDefinition(stringId = "tool"), ItemDefinition(stringId = "material")), mapOf("tool" to 0, "material" to 1))
+        player.bank.add("tool")
+        player.bank.add("material", 10)
+        assertNotNull(DynamicResolvers.resolver(player, BotInventorySetup(listOf(BotItem(setOf("missing", "tool"), min = 1), BotItem(setOf("material"), min = 9)))))
+        assertNull(DynamicResolvers.resolver(player, BotInventorySetup(listOf(BotItem(setOf("tool"), min = 1), BotItem(setOf("material"), min = 10)))))
+        assertNull(DynamicResolvers.resolver(player, BotInventorySetup(listOf(BotItem(setOf("tool"), min = 1), BotItem(setOf("material"), min = 9), BotItem(setOf("empty"), min = 1)))))
+    }
+
+    @Test
+    fun `Noted and unnoted outputs share the same available bank supply`() {
+        ItemDefinitions.set(arrayOf(ItemDefinition(stringId = "material", noteId = 1), ItemDefinition(stringId = "material_noted", noteId = 0, notedTemplateId = 799, stackable = 1)), mapOf("material" to 0, "material_noted" to 1))
+        player.bank.add("material", 5)
+        val setup = BotInventorySetup(listOf(BotItem(setOf("material_noted"), min = 5), BotItem(setOf("material"), min = 1)))
+        assertNull(DynamicResolvers.resolver(player, setup))
+        player.inventory.add("material_noted", 1)
+        assertNotNull(DynamicResolvers.resolver(player, setup))
     }
 
     @Test
