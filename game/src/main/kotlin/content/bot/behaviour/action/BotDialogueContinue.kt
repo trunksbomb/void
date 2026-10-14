@@ -15,6 +15,9 @@ data class BotDialogueContinue(val option: String, val id: String, val success: 
         if (success != null && success.check(bot.player)) {
             return BehaviourState.Success
         }
+        if (frame.interactionAccepted || bot.player.delayed) {
+            return BehaviourState.Running
+        }
         val split = id.split(":")
         if (split.size < 2) {
             return BehaviourState.Failed(Reason.Invalid("Invalid interface id '$id'."))
@@ -40,6 +43,11 @@ data class BotDialogueContinue(val option: String, val id: String, val success: 
         if (!valid) {
             return BehaviourState.Failed(Reason.Invalid("Invalid interaction: ${def.stringId}:${componentDef.stringId} option=$option index=$index."))
         }
-        return BehaviourState.Wait(1, BehaviourState.Success)
+        frame.interactionAccepted = true
+        return when {
+            success == null -> BehaviourState.Wait(1, BehaviourState.Success)
+            success.check(bot.player) -> BehaviourState.Success
+            else -> BehaviourState.Running
+        }
     }
 }

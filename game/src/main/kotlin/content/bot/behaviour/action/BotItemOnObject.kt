@@ -24,16 +24,19 @@ data class BotItemOnObject(
         if (success != null && success.check(bot.player)) {
             return BehaviourState.Success
         }
+        if (frame.interactionAccepted || bot.player.delayed) {
+            return BehaviourState.Running
+        }
         val inventory = bot.player.inventory
         val slot = inventory.indexOf(this@BotItemOnObject.item)
         if (slot == -1) {
             return BehaviourState.Failed(Reason.Invalid("No inventory item '${this@BotItemOnObject.item}'."))
         }
         val item = inventory[slot]
-        return search(bot, world, item, slot)
+        return search(bot, world, frame, item, slot)
     }
 
-    private fun search(bot: Bot, world: BotWorld, item: Item, slot: Int): BehaviourState {
+    private fun search(bot: Bot, world: BotWorld, frame: BehaviourFrame, item: Item, slot: Int): BehaviourState {
         val player = bot.player
         val ids = if (id.contains(",")) id.split(",") else listOf(id)
         for (tile in Spiral.spiral(player.tile, 10)) {
@@ -44,6 +47,13 @@ data class BotItemOnObject(
                 val valid = world.execute(bot.player, InteractInterfaceObject(obj.intId, obj.x, obj.y, 149, 0, item.def.id, slot))
                 if (!valid) {
                     return BehaviourState.Failed(Reason.Invalid("Invalid item on object: ${item.def.id}:$slot -> $obj."))
+                }
+                frame.interactionAccepted = true
+                if (success == null) {
+                    return BehaviourState.Wait(maxOf(delay, 1), BehaviourState.Success)
+                }
+                if (success.check(player)) {
+                    return BehaviourState.Success
                 }
                 if (delay > 0) {
                     return BehaviourState.Wait(delay, BehaviourState.Running)

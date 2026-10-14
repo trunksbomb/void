@@ -186,4 +186,30 @@ class BotDialogueContinueTest {
         assertEquals(BehaviourState.Wait(1, BehaviourState.Success), state)
         assertTrue(called)
     }
+    @Test
+    fun `Accepted continue waits for result without duplicate clicks`() {
+        InterfaceDefinitions.set(
+            arrayOf(InterfaceDefinition(id = 0, type = "main_screen", components = mutableMapOf(
+                0 to InterfaceComponentDefinition(id = 0, options = arrayOf("Yes")),
+            ))),
+            mapOf("test" to 0), mapOf("test:component" to 0),
+        )
+        val player = Player()
+        val bot = Bot(player)
+        var calls = 0
+        val world = FakeWorld(execute = { _, _ -> calls++; true })
+        val frame = BehaviourFrame(FakeBehaviour())
+        val action = BotDialogueContinue("Yes", "test:component", BotHasClock("ready"))
+        player.delay = 1
+        assertEquals(BehaviourState.Running, action.update(bot, world, frame))
+        assertEquals(0, calls)
+        player.delay = 0
+        assertEquals(BehaviourState.Running, action.update(bot, world, frame))
+        repeat(3) { assertEquals(BehaviourState.Running, action.update(bot, world, frame)) }
+        assertEquals(1, calls)
+        player.start("ready", 10)
+        assertEquals(BehaviourState.Success, action.update(bot, world, frame))
+        assertEquals(1, calls)
+    }
+
 }

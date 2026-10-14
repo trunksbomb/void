@@ -10,7 +10,7 @@ setup = [
 actions = [
     { item_on_object = { id = "$raw", object = "$obj", success = { interface_open = { id = "dialogue_skill_creation" } } } },
     { interface = { option = "All", id = "skill_creation_amount:all" } },
-    { continue = { id = "dialogue_skill_creation:choice1" } },
+    { continue = { id = "dialogue_skill_creation:choice1", success = { queue = { id = "cooking" } } } },
     { restart = { wait_if = { queue = { id = "cooking" } }, success = { inventory = { id = "$raw", max = 0 } } } }
 ]
 produces = [
@@ -33,7 +33,7 @@ actions = [
     { item_on_object = { id = "raw_beef", object = "$obj", success = { interface_open = { id = "dialogue_multi2" } } } },
     { continue = { option = "Continue", id = "dialogue_multi2:line2", success = { interface_open = { id = "dialogue_skill_creation" } } } },
     { interface = { option = "All", id = "skill_creation_amount:all" } },
-    { continue = { id = "dialogue_skill_creation:choice1" } },
+    { continue = { id = "dialogue_skill_creation:choice1", success = { queue = { id = "cooking" } } } },
     { restart = { wait_if = { queue = { id = "cooking" } }, success = { inventory = { id = "raw_beef", max = 0 } } } }
 ]
 produces = [

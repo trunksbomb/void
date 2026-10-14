@@ -23,6 +23,7 @@ data class BotRestart(
         } else if (wait.any { it.check(bot.player) }) {
             return BehaviourState.Running
         }
+        frame.interactionAccepted = false
         frame.index = 0
         return BehaviourState.Running
     }

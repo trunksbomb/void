@@ -6,6 +6,8 @@ import content.bot.FakeWorld
 import content.bot.behaviour.BehaviourFrame
 import content.bot.behaviour.BehaviourState
 import content.bot.behaviour.Reason
+import content.bot.behaviour.condition.BotHasClock
+import world.gregs.voidps.engine.client.variable.start
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -58,7 +60,7 @@ class BotItemOnObjectTest {
     }
 
     @Test
-    fun `Valid interaction returns running`() {
+    fun `Valid interaction without condition completes after a tick`() {
         player.inventory.add("bucket")
 
         ObjectDefinitions.set(
@@ -79,8 +81,33 @@ class BotItemOnObjectTest {
 
         val state = action.update(bot, world, BehaviourFrame(FakeBehaviour()))
 
-        assertEquals(BehaviourState.Running, state)
+        assertEquals(BehaviourState.Wait(1, BehaviourState.Success), state)
         assertTrue(called)
+    }
+
+    @Test
+    fun `Accepted interaction waits without resending during arrival delay`() {
+        player.inventory.add("bucket")
+        ObjectDefinitions.set(arrayOf(ObjectDefinition(id = 0, stringId = "well")), mapOf("well" to 0))
+        GameObjects.add("well", player.tile)
+        var calls = 0
+        val world = FakeWorld(execute = { _, _ -> calls++; true })
+        val frame = BehaviourFrame(FakeBehaviour())
+        val action = BotItemOnObject("bucket", "well", success = BotHasClock("ready"))
+        player.delay = 1
+        assertEquals(BehaviourState.Running, action.update(bot, world, frame))
+        assertEquals(0, calls)
+        player.delay = 0
+        assertEquals(BehaviourState.Running, action.update(bot, world, frame))
+        player.delay = 1
+        repeat(3) { assertEquals(BehaviourState.Running, action.update(bot, world, frame)) }
+        assertEquals(1, calls)
+        player.start("ready", 10)
+        assertEquals(BehaviourState.Success, action.update(bot, world, frame))
+        assertEquals(1, calls)
+        player.delay = 0
+        action.copy(success = BotHasClock("another")).update(bot, world, BehaviourFrame(FakeBehaviour()))
+        assertEquals(2, calls)
     }
 
     @Test
@@ -112,4 +139,22 @@ class BotItemOnObjectTest {
 
         assertEquals(BehaviourState.Failed(Reason.NoTarget), state)
     }
+    @Test
+    fun `Waiting interaction times out and restart clears acceptance`() {
+        val action = BotItemOnObject("bucket", "well", success = BotHasClock("ready"))
+        val behaviour = object : content.bot.behaviour.Behaviour by FakeBehaviour() {
+            override val actions = listOf(action)
+            override val timeout = 2
+        }
+        val frame = BehaviourFrame(behaviour)
+        frame.interactionAccepted = true
+        repeat(3) { frame.update(bot, FakeWorld()) }
+        assertEquals(BehaviourState.Failed(Reason.Timeout), frame.state)
+        BotRestart(emptyList(), BotHasClock("ready")).update(bot, FakeWorld(), frame)
+        assertFalse(frame.interactionAccepted)
+        frame.interactionAccepted = true
+        frame.start(bot, FakeWorld())
+        assertFalse(frame.interactionAccepted)
+    }
+
 }

@@ -15,11 +15,15 @@ data class BehaviourFrame(
     var timeout: Int = 0,
 ) {
 
+    /** Whether the current action has submitted an accepted interaction. */
+    var interactionAccepted: Boolean = false
+
     fun action(): BotAction = behaviour.actions[index]
 
     fun completed() = index >= behaviour.actions.size
 
     fun start(bot: Bot, world: BotWorld) {
+        interactionAccepted = false
         val action = action()
         state = action.start(bot, world, this)
     }
@@ -37,6 +41,7 @@ data class BehaviourFrame(
         if (index >= behaviour.actions.lastIndex) {
             return false
         }
+        interactionAccepted = false
         index++
         timeout = 0
         state = BehaviourState.Running
