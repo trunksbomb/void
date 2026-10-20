@@ -1,18 +1,10 @@
 package world.gregs.voidps.network.login.protocol.decode
 
 import kotlinx.io.Source
-import world.gregs.voidps.network.client.Instruction
+import kotlinx.io.readUByte
+import world.gregs.voidps.network.client.instruction.LobbyOnlineStatus
 import world.gregs.voidps.network.login.protocol.Decoder
 
-/**
- * Player has changed their online status while in the lobby
- */
 class LobbyOnlineStatusDecoder : Decoder(3) {
-
-    override suspend fun decode(packet: Source): Instruction? {
-        val first = packet.readByte()
-        val status = packet.readByte()
-        val second = packet.readByte()
-        return null
-    }
+    override suspend fun decode(packet: Source) = LobbyOnlineStatus(packet.readUByte().toInt(), packet.readUByte().toInt(), packet.readUByte().toInt())
 }

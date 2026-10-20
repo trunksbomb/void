@@ -14,5 +14,7 @@ interface AccountLoader {
 
     fun password(username: String): String?
 
+    suspend fun loadLobby(client: Client, username: String, passwordHash: String): LobbySession? = null
+
     suspend fun load(client: Client, username: String, passwordHash: String, displayMode: Int): SendChannel<Instruction>?
 }

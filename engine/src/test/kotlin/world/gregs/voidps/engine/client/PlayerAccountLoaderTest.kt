@@ -116,13 +116,50 @@ internal class PlayerAccountLoaderTest : KoinMock() {
     }
 
     @Test
-    fun `Can't login if account is being saved`() = runTest {
+    fun `Login waits for departure save before loading the account`() = runTest {
+        saveQueue = SaveQueue(storage, scope = backgroundScope)
+        loader = PlayerAccountLoader(queue, storage, accounts, saveQueue, definitions, UnconfinedTestDispatcher(testScheduler))
+        playerSave = PlayerSave("name", "hash", Tile.EMPTY, intArrayOf(), emptyList(), intArrayOf(), true, intArrayOf(), intArrayOf(), emptyMap(), emptyMap(), emptyMap(), emptyList(), arrayOf(), emptyList(), emptyMap(), emptyMap(), emptyList())
         saveQueue.save(Player(accountName = "name"))
         val client: Client = mockk(relaxed = true)
 
         val instructions = loader.load(client, "name", "pass", 2)
-        assertNull(instructions)
-        coVerify { client.disconnect(Response.ACCOUNT_ONLINE) }
+        assertNotNull(instructions)
+        assertEquals(false, saveQueue.saving("name"))
+        coVerify(exactly = 0) { client.disconnect(Response.ACCOUNT_ONLINE) }
+    }
+
+    @Test
+    fun `Lobby login does not spawn or index a world player`() = runTest {
+        val client: Client = mockk(relaxed = true)
+        playerSave = PlayerSave("name", "hash", Tile.EMPTY, intArrayOf(), emptyList(), intArrayOf(), true, intArrayOf(), intArrayOf(), emptyMap(), emptyMap(), emptyMap(), emptyList(), arrayOf(), emptyList(), emptyMap(), emptyMap(), emptyList())
+        val session = loader.loadLobby(client, "name", "pass")
+        assertNotNull(session)
+        verify(exactly = 0) { accounts.index(any()) }
+        verify(exactly = 0) { accounts.spawn(any(), any()) }
+        session.close()
+    }
+
+    @Test
+    fun `First world login preserves setup for an account created in the lobby`() = runTest {
+        val definitionsBefore = world.gregs.voidps.engine.data.definition.VariableDefinitions.definitions
+        world.gregs.voidps.engine.data.definition.VariableDefinitions.set(definitionsBefore + ("lobby_first_world" to world.gregs.voidps.engine.data.config.VariableDefinition.CustomVariableDefinition(world.gregs.voidps.engine.client.variable.BooleanValues, false, true)))
+        try {
+            playerSave = PlayerSave("name", "hash", Tile.EMPTY, intArrayOf(), emptyList(), intArrayOf(), true, intArrayOf(), intArrayOf(), mapOf("lobby_first_world" to true), emptyMap(), emptyMap(), emptyList(), arrayOf(), emptyList(), emptyMap(), emptyMap(), emptyList())
+            val client: Client = mockk(relaxed = true)
+            assertNotNull(loader.load(client, "name", "pass", 2))
+            verify { accounts.setup(match { it["new_player", false] && !it.contains("lobby_first_world") }, client, 2, true) }
+        } finally {
+            world.gregs.voidps.engine.data.definition.VariableDefinitions.set(definitionsBefore)
+        }
+    }
+
+    @Test
+    fun `Lobby rejects banned accounts`() = runTest {
+        val client: Client = mockk(relaxed = true)
+        playerSave = PlayerSave("name", "hash", Tile.EMPTY, intArrayOf(), emptyList(), intArrayOf(), true, intArrayOf(), intArrayOf(), mapOf("banned_until" to Int.MAX_VALUE), emptyMap(), emptyMap(), emptyList(), arrayOf(), emptyList(), emptyMap(), emptyMap(), emptyList())
+        assertNull(loader.loadLobby(client, "name", "pass"))
+        coVerify { client.disconnect(Response.ACCOUNT_DISABLED) }
     }
 
     @Test

@@ -2,8 +2,11 @@ package world.gregs.voidps.engine.client
 
 import com.github.michaelbull.logging.InlineLogger
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.SendChannel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import world.gregs.voidps.engine.data.AccountManager
 import world.gregs.voidps.engine.data.SaveQueue
 import world.gregs.voidps.engine.data.Settings
@@ -20,6 +23,7 @@ import world.gregs.voidps.network.client.Client
 import world.gregs.voidps.network.client.ConnectionQueue
 import world.gregs.voidps.network.client.Instruction
 import world.gregs.voidps.network.login.AccountLoader
+import world.gregs.voidps.network.login.LobbySession
 import world.gregs.voidps.network.login.protocol.encode.login
 
 /**
@@ -49,9 +53,8 @@ class PlayerAccountLoader(
      */
     override suspend fun load(client: Client, username: String, passwordHash: String, displayMode: Int): SendChannel<Instruction>? {
         try {
-            val saving = saveQueue.saving(username)
-            if (saving) {
-                client.disconnect(Response.ACCOUNT_ONLINE)
+            if (!awaitSave(username)) {
+                client.disconnect(Response.COULD_NOT_COMPLETE_LOGIN)
                 return null
             }
             if (update) {
@@ -71,6 +74,10 @@ class PlayerAccountLoader(
                 }
                 player = accounts.create(username, passwordHash)
             }
+            if (player["lobby_first_world", false]) {
+                player.clear("lobby_first_world")
+                player["new_player"] = true
+            }
             logger.info { "Player $username loaded and queued for login." }
             connect(player, client, displayMode)
             return player.instructions
@@ -79,6 +86,58 @@ class PlayerAccountLoader(
             client.disconnect(Response.COULD_NOT_COMPLETE_LOGIN)
             return null
         }
+    }
+
+    /** Drain world departure before reading storage, then wait for the queued save. */
+    private suspend fun awaitSave(username: String): Boolean {
+        withContext(gameContext) { queue.await() }
+        return withTimeoutOrNull(10_000L) {
+            while (saveQueue.saving(username)) {
+                saveQueue.run()
+                delay(25)
+            }
+            true
+        } ?: false
+    }
+
+    override suspend fun loadLobby(client: Client, username: String, passwordHash: String): LobbySession? {
+        if (update) {
+            client.disconnect(Response.GAME_UPDATE)
+            return null
+        }
+        if (!awaitSave(username)) {
+            client.disconnect(Response.COULD_NOT_COMPLETE_LOGIN)
+            return null
+        }
+        val save = withContext(Dispatchers.IO) { storage.load(username) }
+        if (save != null && banned(save.variables)) {
+            client.disconnect(Response.ACCOUNT_DISABLED)
+            return null
+        }
+        if (save == null && !Settings["development.accountCreation", false]) {
+            client.disconnect(Response.INVALID_CREDENTIALS)
+            return null
+        }
+        val player = save?.toPlayer() ?: accounts.create(username, passwordHash)
+        if (save == null) {
+            player["lobby_first_world"] = true
+            withContext(gameContext) {
+                queue.await()
+                accountDefinitions.add(player)
+                saveQueue.save(player)
+            }
+            if (!awaitSave(username)) {
+                client.disconnect(Response.COULD_NOT_COMPLETE_LOGIN)
+                return null
+            }
+        }
+        val session = PlayerLobbySession(player, client, accountDefinitions, saveQueue, queue, gameContext)
+        client.onDisconnecting { session.close() }
+        withContext(gameContext) {
+            queue.await()
+            session.start()
+        }
+        return session
     }
 
     private fun banned(variables: Map<String, Any>): Boolean {

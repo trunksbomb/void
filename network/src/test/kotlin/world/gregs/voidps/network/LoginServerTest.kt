@@ -115,7 +115,7 @@ internal class LoginServerTest {
         launch {
             server.connect(readChannel, writeChannel, "localhost")
         }
-        readChannel.writeByte(Request.LOBBY)
+        readChannel.writeByte(Request.SIGN_UP)
 
         assertEquals(Response.DATA_CHANGE, writeChannel.readByte().toInt())
         assertEquals(Response.LOGIN_SERVER_REJECTED_SESSION, writeChannel.readByte().toInt())

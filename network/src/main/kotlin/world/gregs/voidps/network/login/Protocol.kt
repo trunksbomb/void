@@ -113,7 +113,7 @@ object Protocol {
     const val UNKNOWN_4 = 18 // size 0
     const val UNKNOWN_5 = 40 // size -1
     const val UNKNOWN_7 = 39 // size 8
-    const val UNKNOWN_11 = 60 // size 0 - force logout?
+    const val LOGOUT_LOBBY = 60
     const val UNKNOWN_14 = 92 // size -1
     const val WORLD_LIST_FULL = 98 // size -2
     const val UNKNOWN_16 = 12 // size 0 - clear all players

@@ -34,3 +34,8 @@ persist = true
 [world_map_hidden]
 format = "boolean"
 persist = true
+
+# Preserve first-world setup when an account is created in the lobby.
+[lobby_first_world]
+format = "boolean"
+persist = true

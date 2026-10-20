@@ -13,12 +13,14 @@ class Exit(val accounts: AccountManager) : Script {
             open("logout")
         }
 
-        interfaceOption(id = "logout:*") {
-            if (underAttack) {
-                message("You can't log out until 8 seconds after the end of combat.")
-                return@interfaceOption
+        for (destination in listOf("lobby", "login")) {
+            interfaceOption(id = "logout:$destination") {
+                if (underAttack) {
+                    message("You can't log out until 8 seconds after the end of combat.")
+                    return@interfaceOption
+                }
+                accounts.logout(this, true, toLobby = destination == "lobby")
             }
-            accounts.logout(this, true)
         }
     }
 }

@@ -110,7 +110,7 @@ class AccountManager(
         }
     }
 
-    suspend fun logout(player: Player, safely: Boolean) {
+    suspend fun logout(player: Player, safely: Boolean, toLobby: Boolean = false) {
         if (player["logged_out", false]) {
             return
         }
@@ -118,17 +118,19 @@ class AccountManager(
             player.message("You need to wait a few moments before you can log out.")
             return
         }
+        if (safely) {
+            player["logout_to_lobby"] = toLobby
+        }
         if (safely && !Despawn.logout(player)) {
             return
         }
         player["logged_out"] = true
-        player.client?.logout()
+        player.client?.logout(toLobby)
         if (safely) {
             player.strongQueue("logout") {
                 // Make sure nothing else starts
             }
         }
-        player.client?.disconnect()
         connectionQueue.disconnect {
             World.queue("logout_${player.accountName}", 1) {
                 Players.remove(player)
@@ -137,5 +139,7 @@ class AccountManager(
             saveQueue.save(player)
             AuditLog.event(player, "disconnected", player.tile)
         }
+        // Queue the save before disconnect releases the login reservation.
+        player.client?.disconnect()
     }
 }

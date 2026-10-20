@@ -68,8 +68,8 @@ class DecoderTest {
         InteractInterface(123, 456, 23456, 12, 9), // 42
         MoveInventoryItem(123, 456, 12345, 12, 654, 321, 23456, 21), // 78
         null, // 69
-        null, // 75
-        null, // 30
+        LobbyOnlineStatus(123, 200, 21), // 75
+        LobbyWorldListRefresh(123456), // 30
         null, // 55
         ExamineNpc(12345), // 68
         InteractNPC(12345, 1), // 63

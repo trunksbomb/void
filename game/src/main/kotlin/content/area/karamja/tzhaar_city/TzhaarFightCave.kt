@@ -268,7 +268,7 @@ class TzhaarFightCave(
             val duration = epochMilliseconds() - startTime
             player["tzhaar_fight_cave_duration"] = duration
             Script.launch {
-                accountManager.logout(player, true)
+                accountManager.logout(player, true, toLobby = player["logout_to_lobby", false])
             }
             return
         }

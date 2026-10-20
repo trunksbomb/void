@@ -3,7 +3,10 @@ package world.gregs.voidps.network
 import com.github.michaelbull.logging.InlineLogger
 import io.ktor.utils.io.*
 import io.ktor.utils.io.core.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.SendChannel
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.Source
 import kotlinx.io.readByteArray
@@ -36,13 +39,23 @@ class LoginServer(
     private val attempts: LoginAttempts = LoginAttempts(),
 ) : Server {
 
+    private data class LobbyConnection(
+        val client: Client,
+        val ready: CompletableDeferred<Unit> = CompletableDeferred(),
+        val closed: CompletableDeferred<Unit> = CompletableDeferred(),
+    )
+
+    private val lobbies = ConcurrentHashMap<String, LobbyConnection>()
+
     internal val online: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     override suspend fun connect(read: ByteReadChannel, write: ByteWriteChannel, hostname: String) {
         write.respond(Response.DATA_CHANGE)
+        var lobby = false
         val packet = withTimeoutOrNull(GameServer.HANDSHAKE_TIMEOUT_MS) {
             val opcode = read.readByte().toInt()
-            if (opcode != Request.LOGIN && opcode != Request.RECONNECT) {
+            lobby = opcode == Request.LOBBY
+            if (opcode != Request.LOGIN && opcode != Request.RECONNECT && !lobby) {
                 logger.trace { "Invalid request id: $opcode" }
                 write.finish(Response.LOGIN_SERVER_REJECTED_SESSION)
                 return@withTimeoutOrNull null
@@ -53,10 +66,10 @@ class LoginServer(
         if (packet == null) {
             return
         }
-        checkClientVersion(read, packet, write, hostname)
+        checkClientVersion(read, packet, write, hostname, lobby)
     }
 
-    private suspend fun checkClientVersion(read: ByteReadChannel, packet: Source, write: ByteWriteChannel, hostname: String) {
+    private suspend fun checkClientVersion(read: ByteReadChannel, packet: Source, write: ByteWriteChannel, hostname: String, lobby: Boolean) {
         val version = packet.readInt()
         if (version != revision) {
             logger.trace { "Invalid client revision: $version" }
@@ -71,10 +84,10 @@ class LoginServer(
         }
         val data = packet.readByteArray(rsaBlockSize)
         val rsa = RSA.crypt(data, modulus, private)
-        validateSession(read, ByteReadPacket(rsa), packet, write, hostname)
+        validateSession(read, ByteReadPacket(rsa), packet, write, hostname, lobby)
     }
 
-    private suspend fun validateSession(read: ByteReadChannel, rsa: Source, packet: Source, write: ByteWriteChannel, hostname: String) {
+    private suspend fun validateSession(read: ByteReadChannel, rsa: Source, packet: Source, write: ByteWriteChannel, hostname: String, lobby: Boolean) {
         val sessionId = rsa.readUByte().toInt()
         if (sessionId != Request.SESSION) {
             logger.debug { "Bad session id $sessionId" }
@@ -96,21 +109,64 @@ class LoginServer(
         val password: String = rsa.readString()
         val xtea = decryptXtea(packet, isaacKeys)
         val username = xtea.readString()
-        xtea.readUByte() // social login
-        val displayMode = xtea.readUByte().toInt()
-        if (!validate(write, username, password, hostname)) {
+        if (lobby) {
+            xtea.readUByte() // game ID
+            xtea.readUByte() // language ID
+        } else {
+            xtea.readUByte() // social login
+        }
+        val displayMode = if (lobby) 0 else xtea.readUByte().toInt()
+        if (!validate(write, username, password, hostname, lobby)) {
             return
         }
         val client = createClient(write, isaacKeys, hostname)
+        val name = username.lowercase()
+        val connection = LobbyConnection(client)
+        if (lobby) {
+            val claimed = synchronized(online) {
+                !online.contains(name) && lobbies.putIfAbsent(name, connection) == null
+            }
+            if (!claimed) {
+                client.disconnect(Response.ACCOUNT_ONLINE)
+                return
+            }
+        }
         client.onDisconnected {
-            online.remove(username.lowercase())
+            if (!lobby) {
+                online.remove(name)
+            }
             read.cancel()
         }
-        val passwordHash = passwordManager.encrypt(username, password)
-        login(read, client, username, passwordHash, displayMode)
+        try {
+            if (!lobby) {
+                lobbies.remove(name)?.let {
+                    it.ready.await()
+                    it.client.disconnect()
+                    it.closed.await()
+                }
+            }
+            val passwordHash = passwordManager.encrypt(username, password)
+            if (lobby) {
+                loginLobby(read, client, username, passwordHash, connection.ready)
+            } else {
+                login(read, client, username, passwordHash, displayMode)
+            }
+        } finally {
+            withContext(NonCancellable) {
+                try {
+                    client.exit()
+                    client.disconnect()
+                } finally {
+                    if (lobby) {
+                        lobbies.remove(name, connection)
+                        connection.closed.complete(Unit)
+                    }
+                }
+            }
+        }
     }
 
-    suspend fun validate(write: ByteWriteChannel, username: String, password: String, hostname: String): Boolean {
+    suspend fun validate(write: ByteWriteChannel, username: String, password: String, hostname: String, lobby: Boolean = false): Boolean {
         if (attempts.blocked(username, hostname)) {
             write.finish(Response.LOGIN_ATTEMPTS_EXCEEDED)
             return false
@@ -129,7 +185,14 @@ class LoginServer(
             return false
         }
         val name = username.lowercase()
-        if (!online.add(name)) {
+        if (lobby) {
+            if (online.contains(name) || lobbies.containsKey(name)) {
+                write.finish(Response.ACCOUNT_ONLINE)
+                return false
+            }
+            return true
+        }
+        if (!synchronized(online) { online.add(name) }) {
             write.finish(Response.ACCOUNT_ONLINE)
             return false
         }
@@ -165,12 +228,39 @@ class LoginServer(
                 throw e
             }
         } finally {
-            client.exit()
-            client.disconnect()
+            withContext(NonCancellable) {
+                client.exit()
+                client.disconnect()
+            }
         }
     }
 
-    private suspend fun readPackets(client: Client, instructions: SendChannel<Instruction>, read: ByteReadChannel) {
+    private suspend fun loginLobby(read: ByteReadChannel, client: Client, username: String, passwordHash: String, ready: CompletableDeferred<Unit>) {
+        val session = try {
+            accounts.loadLobby(client, username, passwordHash)
+        } catch (exception: Exception) {
+            client.disconnect()
+            throw exception
+        } finally {
+            ready.complete(Unit)
+        }
+        try {
+            if (session != null) {
+                readPackets(client, read, session::handle)
+            } else if (!client.disconnected) {
+                client.disconnect(Response.LOGIN_SERVER_REJECTED_SESSION)
+            }
+        } finally {
+            withContext(NonCancellable) {
+                client.exit()
+                client.disconnect()
+            }
+        }
+    }
+
+    private suspend fun readPackets(client: Client, instructions: SendChannel<Instruction>, read: ByteReadChannel) = readPackets(client, read) { instructions.send(it) }
+
+    private suspend fun readPackets(client: Client, read: ByteReadChannel, handle: suspend (Instruction) -> Unit) {
         while (!client.disconnected) {
             val cipher = client.cipherIn.nextInt()
             val next = withTimeoutOrNull(IDLE_TIMEOUT_MS) { read.readUByte() }
@@ -179,7 +269,7 @@ class LoginServer(
                 return
             }
             val opcode = (next - cipher) and 0xff // Exhausted due to client termination. Something not written correctly I would guess.
-            val decoder = protocol[opcode]
+            val decoder = protocol.getOrNull(opcode)
             if (decoder == null) {
                 logger.error { "No decoder for message opcode $opcode" }
                 return
@@ -190,7 +280,7 @@ class LoginServer(
                 else -> decoder.length
             }
             val packet = read.readPacket(size)
-            instructions.send(decoder.decode(packet) ?: continue)
+            handle(decoder.decode(packet) ?: continue)
         }
     }
 

@@ -138,6 +138,44 @@ class AccountManagerTest : KoinMock() {
     }
 
     @Test
+    fun `Lobby logout remembers its destination when a script defers departure`() = runTest {
+        mockkStatic("world.gregs.voidps.network.login.protocol.encode.LogoutEncoderKt")
+        io.mockk.mockkObject(world.gregs.voidps.engine.entity.Despawn)
+        val client: Client = mockk(relaxed = true)
+        val player = Player(0)
+        player.client = client
+        try {
+            io.mockk.every { world.gregs.voidps.engine.entity.Despawn.logout(player) } returns false
+            manager.logout(player, true, toLobby = true)
+            assertTrue(player["logout_to_lobby", false])
+            coVerify(exactly = 0) { client.logout(any()) }
+        } finally {
+            io.mockk.unmockkObject(world.gregs.voidps.engine.entity.Despawn)
+        }
+        manager.logout(player, true, toLobby = player["logout_to_lobby", false])
+        connectionQueue.run()
+        GameLoop.tick = 2
+        World.run()
+        coVerify { client.logout(true) }
+    }
+
+    @Test
+    fun `Departure cleanup is queued before disconnect releases the account`() = runTest {
+        val client = DummyClient()
+        val player = Player(accountName = "name", tile = Tile(3200, 3200))
+        manager.setup(player, client, 0, viewport = false)
+        manager.index(player)
+        manager.spawn(player, client)
+        client.onDisconnected {
+            connectionQueue.run()
+            assertTrue(saveQueue.saving("name"))
+        }
+        manager.logout(player, true, toLobby = true)
+        GameLoop.tick += 2
+        World.run()
+    }
+
+    @Test
     fun `Dropped connection still saves the session`() = runTest {
         val client = DummyClient()
         val player = Player(accountName = "name", tile = Tile(3200, 3200))
